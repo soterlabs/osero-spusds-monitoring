@@ -52,8 +52,13 @@ function parseSchedule(raw) {
     throw new Error('BASE_RATE_SPREAD_SCHEDULE must be a non-empty array.');
   }
   for (const e of parsed) {
-    if (!e || typeof e.from !== 'string' || Number.isNaN(Date.parse(e.from))) {
-      throw new Error(`BASE_RATE_SPREAD_SCHEDULE entry needs a valid "from" date: ${JSON.stringify(e)}`);
+    // Must be zero-padded YYYY-MM-DD: `spreadAt` compares these as strings, so
+    // "2026-7-3" would parse fine and then sort before "2026-01-01".
+    if (!e || typeof e.from !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.from)
+        || Number.isNaN(Date.parse(e.from))) {
+      throw new Error(
+        `BASE_RATE_SPREAD_SCHEDULE entry needs a "from" date as YYYY-MM-DD: ${JSON.stringify(e)}`
+      );
     }
     if (typeof e.bps !== 'number' || !Number.isFinite(e.bps) || e.bps < 0) {
       throw new Error(`BASE_RATE_SPREAD_SCHEDULE entry needs a non-negative "bps": ${JSON.stringify(e)}`);

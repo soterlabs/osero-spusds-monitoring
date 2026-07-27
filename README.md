@@ -80,6 +80,11 @@ charged 0.6422 of that day rather than a whole one.
 **Net profit** = gross yield − cost of funds, reported on `/performance` and per-point on
 `/performance/history`.
 
+Rates are annualised against the **time-weighted average position** over the window, not the
+position as it stands now — otherwise a position that grew would look cheaper than it was, and one
+that has closed would divide a real cost by the 1 wei Aave leaves behind. `aprPct` is `null` when
+there was no capital to measure against.
+
 ### Two conventions worth knowing
 
 **The spread is additive here.** `baseRate = ssrApy + spread`, so 3.52% + 20bps = 3.72% exactly.
@@ -125,6 +130,7 @@ The main one. Current snapshot: principal in/out, current balance, **yield since
   "costOfFunds": {
     "sinceInception": { "formatted": "223.455002493252001239", … },
     "aprPct": 2.263471,
+    "averagePosition": { "formatted": "1000126.71441571053590001", … },
     "convention": "baseRate = ssrApy + spread (additive)",
     "basis": "deployed only — the pool has not borrowed out the idle remainder",
     "current": { "ssrApyPct": 3.52, "spreadBps": 20, "baseRateApyPct": 3.72,
@@ -208,6 +214,17 @@ cp .env.example .env      # fill in RPC_URL and ETHERSCAN_API_KEY
 node --env-file=.env src/server.js
 ```
 
+### Tests
+
+```bash
+npm test
+```
+
+39 unit tests over the money math in `src/math.js` and `src/cost.js` — the lending-idle identity,
+the additive base rate, wei-exact rate application, day-grid proration, the spread-schedule
+boundary, cumulative-cost interpolation and cache bounding. They run **offline**: no RPC key, no
+Etherscan key, no network. CI runs them on Node 20 and 22.
+
 ---
 
 ## Requirements and limits
@@ -221,6 +238,10 @@ node --env-file=.env src/server.js
   deposit so far), but a position with hundreds of flows can exhaust a free RPC tier's throughput;
   the service throttles and backs off, and returns `503` with a clear message if the limit still
   bites. A paid RPC endpoint removes the ceiling.
-- The cost-of-funds series costs **one multicall per calendar day** since inception. Past days are
-  cached permanently, so only the current day is re-read; but a first request after a redeploy on a
-  year-old position issues ~365 multicalls. Same throttle, same `503` fallback.
+- The cost-of-funds series costs **one multicall per calendar day** the position was open. Past
+  days are cached permanently, so only the current day is re-read; a first request after a redeploy
+  on a year-old open position issues ~365 multicalls. Same throttle, same `503` fallback. A closed
+  position stops the grid at the flow that emptied it, so it costs days-held, not days-since-
+  inception.
+- The in-memory cache is LRU-bounded (`CACHE_MAX_ENTRIES`, default 20,000). Keys embed block
+  numbers, so an unbounded map would grow for as long as the process lives.

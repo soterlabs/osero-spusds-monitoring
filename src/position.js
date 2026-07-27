@@ -272,7 +272,8 @@ export async function getHistory({ interval = 'day', from, to, limit = 400 }) {
   // Sample on interval boundaries, always anchored at inception and "now".
   const stamps = [start];
   for (let t = Math.ceil(start / step) * step; t < end; t += step) if (t > start) stamps.push(t);
-  stamps.push(end);
+  // `end` may coincide with `start` (opened today) or land on a bucket edge.
+  if (end > stamps[stamps.length - 1]) stamps.push(end);
 
   if (stamps.length > limit) {
     const keep = Math.ceil(stamps.length / limit);

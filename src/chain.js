@@ -3,8 +3,9 @@ import { mainnet } from 'viem/chains';
 import { config } from './config.js';
 import { cached, forever } from './cache.js';
 import { withLimit } from './limiter.js';
+import { RAY, deployedFrom, lendingIdleFrom } from './math.js';
 
-export const RAY = 10n ** 27n;
+export { RAY };
 
 export const client = createPublicClient({
   chain: mainnet,
@@ -163,8 +164,6 @@ export async function dailyStateAt(holder, blockNumber) {
     );
 
     const position = (scaled * index) / RAY;
-    // Guard the degenerate empty-reserve case rather than dividing by zero.
-    const lendingIdle = totalSupply > 0n ? (position * poolIdle) / totalSupply : 0n;
     return {
       scaled,
       index,
@@ -172,8 +171,8 @@ export async function dailyStateAt(holder, blockNumber) {
       poolIdle,
       ssr,
       position,
-      lendingIdle,
-      deployed: position - lendingIdle,
+      lendingIdle: lendingIdleFrom(position, poolIdle, totalSupply),
+      deployed: deployedFrom(position, poolIdle, totalSupply),
     };
   });
 }

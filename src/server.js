@@ -1,4 +1,5 @@
 import express from 'express';
+import { formatUnits } from 'viem';
 import { config } from './config.js';
 import { getBlock, getMarket } from './chain.js';
 import {
@@ -127,7 +128,6 @@ app.get('/cost-of-funds', wrap(async (_req, res) => {
 
 app.get('/flows', wrap(async (_req, res) => {
   const [flows, market] = await Promise.all([getFlows(), getMarket()]);
-  const { formatUnits } = await import('viem');
   res.json({
     holder: config.holder,
     asset: market.underlying,

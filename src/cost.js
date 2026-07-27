@@ -36,13 +36,21 @@
 
 import { config } from './config.js';
 import { cached } from './cache.js';
-import { RAY, blockAtTimestamp, dailyStateAt, getBlock, getMarket } from './chain.js';
+import { blockAtTimestamp, dailyStateAt, getBlock, getMarket } from './chain.js';
 import { pMap } from './pmap.js';
 import { getFlows } from './position.js';
 import { amount, iso, pct, utcDate } from './format.js';
+import {
+  SECONDS_PER_DAY,
+  SECONDS_PER_YEAR,
+  applyRate,
+  dailyFactor,
+  ssrToApy,
+  timeWeightedMean,
+  utilizationFrom,
+} from './math.js';
 
-const SECONDS_PER_DAY = 86_400;
-const SECONDS_PER_YEAR = 31_536_000;
+export { dailyFactor, ssrToApy };
 
 /** Spread over SSR (as a decimal) in force on a given UTC date. */
 export function spreadAt(dateStr) {
@@ -52,23 +60,6 @@ export function spreadAt(dateStr) {
     else break;
   }
   return bps;
-}
-
-/** sUSDS `ssr()` is a per-second rate in RAY; compound it over a year. */
-export const ssrToApy = (ssrRay) => (Number(ssrRay) / 1e27) ** SECONDS_PER_YEAR - 1;
-
-/** One-day growth factor for an APY-quoted rate. */
-export const dailyFactor = (apy) => (1 + apy) ** (1 / 365) - 1;
-
-/**
- * Apply a small positive rate to a wei amount without leaving integer math.
- * The rate is carried at RAY precision (1e-27), far finer than a day's
- * interest on any realistic position.
- */
-function applyRate(weiAmount, rate) {
-  if (rate <= 0 || weiAmount === 0n) return 0n;
-  const rateRay = BigInt(Math.round(rate * 1e18)) * 10n ** 9n;
-  return (weiAmount * rateRay) / RAY;
 }
 
 /**
@@ -103,7 +94,16 @@ async function buildCostSeries() {
   if (flows.length === 0) return { rows: [], total: 0n, inceptionTs: null, decimals: 18 };
 
   const inceptionTs = flows[0].timestamp;
-  const grid = buildDayGrid(inceptionTs, latest.timestamp);
+
+  // A closed position stops accruing, so stop the grid at the flow that emptied
+  // it rather than walking to today. Without this, a position closed a year ago
+  // costs a multicall per day to prove it owes $0. A later non-zero flow means
+  // it reopened, and the grid runs to now again.
+  const lastFlow = flows[flows.length - 1];
+  const closed = lastFlow.scaledBalanceAfter === 0n;
+  const endTs = closed ? Math.min(lastFlow.timestamp, latest.timestamp) : latest.timestamp;
+
+  const grid = buildDayGrid(inceptionTs, endTs);
 
   const rows = await pMap(
     grid,
@@ -126,7 +126,7 @@ async function buildCostSeries() {
         poolIdle: s.poolIdle,
         lendingIdle: s.lendingIdle,
         deployed: s.deployed,
-        utilization: s.totalSupply > 0n ? Number(s.totalSupply - s.poolIdle) / Number(s.totalSupply) : 0,
+        utilization: utilizationFrom(s.poolIdle, s.totalSupply),
         ssrApy,
         spreadBps,
         baseApy,
@@ -142,7 +142,7 @@ async function buildCostSeries() {
     running += r.cof;
     r.cumulative = running;
   }
-  return { rows, total: running, inceptionTs, decimals: market.underlying.decimals };
+  return { rows, total: running, inceptionTs, closed, decimals: market.underlying.decimals };
 }
 
 /** Cached because the final row tracks "now"; historical days are immutable. */
@@ -191,15 +191,24 @@ export async function costSummaryAt(ts, yieldToDate) {
   const last = rows.findLast((r) => r.prevTs < ts) ?? rows[rows.length - 1];
   const years = (ts - inceptionTs) / SECONDS_PER_YEAR;
 
-  // Annualise against the position size, so gross / cost / net are directly
-  // comparable on the same base.
-  const basis = Number(last.position) || 1;
-  const annualise = (v) => (years > 0 ? Number(v) / basis / years : 0);
+  // Annualise against the TIME-WEIGHTED AVERAGE position, not the position as
+  // it stands now. Using the latter understates the rate for a position that
+  // grew, and collapses entirely once one exits — Aave leaves 1 wei behind, so
+  // a closed position would otherwise divide a real cost by dust and report an
+  // astronomical APR. `null` when there is no capital to measure against.
+  const avgPosition = timeWeightedMean(rows, ts, (r) => r.position);
+  const annualise = (v) =>
+    years > 0 && avgPosition > 0n ? Number(v) / Number(avgPosition) / years : null;
+  const asPct = (v) => {
+    const r = annualise(v);
+    return r === null ? null : pct(r);
+  };
 
   return {
     costOfFunds: {
       sinceInception: amount(cof, decimals),
-      aprPct: pct(annualise(cof)),
+      aprPct: asPct(cof),
+      averagePosition: amount(avgPosition, decimals),
       convention: 'baseRate = ssrApy + spread (additive)',
       basis: 'deployed only — the pool has not borrowed out the idle remainder',
       current: {
@@ -216,7 +225,7 @@ export async function costSummaryAt(ts, yieldToDate) {
     },
     net: {
       sinceInception: amount(net, decimals),
-      aprPct: pct(annualise(net)),
+      aprPct: asPct(net),
       profitable: net > 0n,
     },
   };
