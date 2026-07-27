@@ -128,6 +128,56 @@ export async function scaledBalanceAndIndexAt(holder, blockNumber) {
   });
 }
 
+const susdsAbi = parseAbi(['function ssr() view returns (uint256)']);
+
+/**
+ * Every input the cost-of-funds calculation needs at one historical block, in
+ * a single multicall:
+ *
+ *   position     = scaledBalance × index / RAY          (holder's rebased balance)
+ *   poolIdle     = underlying sitting in the aToken     (unborrowed liquidity)
+ *   lendingIdle  = position × poolIdle / totalSupply    (holder's share of it)
+ *   deployed     = position − lendingIdle               ( ≡ position × utilization )
+ *   ssr          = Sky Savings Rate, per-second in RAY
+ *
+ * `lendingIdle` mirrors settlement-cycle's `lending_idle_usds` deduction
+ * (`_aggregate_lending_idle_usds`): the prime pays the base rate only on the
+ * borrowed share of what it supplied. Both balances are rebased, so their
+ * ratio equals the scaled ratio — no scaledTotalSupply call needed.
+ */
+export async function dailyStateAt(holder, blockNumber) {
+  return cached(`daily:${holder}:${blockNumber}`, forever, async () => {
+    const { underlying, pool } = await getMarket();
+    const [scaled, index, totalSupply, poolIdle, ssr] = await withLimit(() =>
+      client.multicall({
+        blockNumber,
+        allowFailure: false,
+        contracts: [
+          { address: config.aToken, abi: aTokenAbi, functionName: 'scaledBalanceOf', args: [holder] },
+          { address: pool, abi: poolAbi, functionName: 'getReserveNormalizedIncome', args: [underlying.address] },
+          { address: config.aToken, abi: erc20Abi, functionName: 'totalSupply' },
+          { address: underlying.address, abi: erc20Abi, functionName: 'balanceOf', args: [config.aToken] },
+          { address: config.susds, abi: susdsAbi, functionName: 'ssr' },
+        ],
+      })
+    );
+
+    const position = (scaled * index) / RAY;
+    // Guard the degenerate empty-reserve case rather than dividing by zero.
+    const lendingIdle = totalSupply > 0n ? (position * poolIdle) / totalSupply : 0n;
+    return {
+      scaled,
+      index,
+      totalSupply,
+      poolIdle,
+      ssr,
+      position,
+      lendingIdle,
+      deployed: position - lendingIdle,
+    };
+  });
+}
+
 export async function getBlock(blockNumber) {
   const key = `block:${blockNumber ?? 'latest'}`;
   return cached(key, blockNumber == null ? config.liveCacheTtl : forever, async () => {

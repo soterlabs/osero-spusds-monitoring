@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { cached } from './cache.js';
 import { getTokenTransfers } from './etherscan.js';
 import { pMap } from './pmap.js';
+import { amount, iso, pct } from './format.js';
 import {
   RAY,
   blockAtTimestamp,
@@ -177,14 +178,6 @@ export async function getPerformanceAt(blockNumber, timestamp) {
 /* ------------------------------------------------------------------ *
  * Presentation
  * ------------------------------------------------------------------ */
-
-const pct = (x) => Number((x * 100).toFixed(6));
-
-function amount(raw, decimals) {
-  return { raw: raw.toString(), formatted: formatUnits(raw, decimals), value: Number(formatUnits(raw, decimals)) };
-}
-
-const iso = (ts) => new Date(ts * 1000).toISOString();
 
 export function serialise(p, extras = {}) {
   const d = p.stats.decimals;

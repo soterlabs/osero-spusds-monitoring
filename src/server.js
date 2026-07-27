@@ -9,6 +9,13 @@ import {
   resolveBlock,
   serialise,
 } from './position.js';
+import {
+  costOfFundsAt,
+  costSummaryAt,
+  getCostOfFundsBreakdown,
+  getCostSeries,
+} from './cost.js';
+import { amount } from './format.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -53,10 +60,12 @@ app.get('/', (_req, res) => {
     aToken: config.aToken,
     endpoints: {
       'GET /health': 'Liveness probe.',
-      'GET /performance': 'Current snapshot: principal, balance, yield since inception, APR/APY.',
+      'GET /performance':
+        'Current snapshot: principal, balance, yield since inception, cost of funds, net profit.',
       'GET /performance/at?date=|timestamp=|block=': 'The same snapshot at a past point in time.',
       'GET /performance/history?interval=hour|day|week&from=&to=':
-        'Cumulative yield time series from inception to now.',
+        'Cumulative yield, cost of funds and net profit from inception to now.',
+      'GET /cost-of-funds': 'Day-by-day cost-of-funds breakdown with every input to the charge.',
       'GET /flows': 'Every principal deposit/withdrawal detected on the position.',
     },
   });
@@ -68,7 +77,9 @@ app.get('/health', wrap(async (_req, res) => {
 }));
 
 app.get('/performance', wrap(async (_req, res) => {
-  res.json(await getCurrentPerformance());
+  const perf = await getCurrentPerformance();
+  const cost = await costSummaryAt(perf.asOf.timestamp, BigInt(perf.yield.sinceInception.raw));
+  res.json({ ...perf, ...cost });
 }));
 
 app.get('/performance/at', wrap(async (req, res) => {
@@ -76,20 +87,42 @@ app.get('/performance/at', wrap(async (req, res) => {
     block: intParam(req.query, 'block'),
     timestamp: intParam(req.query, 'timestamp') ?? dateParam(req.query, 'date'),
   });
-  res.json(serialise(await getPerformanceAt(blockNumber, timestamp)));
+  const perf = serialise(await getPerformanceAt(blockNumber, timestamp));
+  const cost = await costSummaryAt(timestamp, BigInt(perf.yield.sinceInception.raw));
+  res.json({ ...perf, ...cost });
 }));
 
 app.get('/performance/history', wrap(async (req, res) => {
   const limit = intParam(req.query, 'limit') ?? 400;
   if (limit < 2 || limit > 2000) throw bad('`limit` must be between 2 and 2000.');
-  res.json(
-    await getHistory({
-      interval: req.query.interval || 'day',
-      from: intParam(req.query, 'from') ?? dateParam(req.query, 'fromDate'),
-      to: intParam(req.query, 'to') ?? dateParam(req.query, 'toDate'),
-      limit,
-    })
-  );
+  const history = await getHistory({
+    interval: req.query.interval || 'day',
+    from: intParam(req.query, 'from') ?? dateParam(req.query, 'fromDate'),
+    to: intParam(req.query, 'to') ?? dateParam(req.query, 'toDate'),
+    limit,
+  });
+
+  // Overlay cost of funds and net profit onto each point. The daily cost
+  // series is built once and interpolated, so this costs no extra RPC beyond
+  // what the series itself needs.
+  const { rows, decimals } = await getCostSeries();
+  let prevCof = null;
+  for (const p of history.points) {
+    const cof = costOfFundsAt(rows, p.timestamp);
+    p.cumulativeCostOfFunds = amount(cof, decimals);
+    p.periodCostOfFunds = amount(prevCof === null ? cof : cof - prevCof, decimals);
+    p.cumulativeNet = amount(BigInt(p.cumulativeYield.raw) - cof, decimals);
+    p.periodNet = amount(
+      BigInt(p.periodYield.raw) - BigInt(p.periodCostOfFunds.raw),
+      decimals
+    );
+    prevCof = cof;
+  }
+  res.json(history);
+}));
+
+app.get('/cost-of-funds', wrap(async (_req, res) => {
+  res.json(await getCostOfFundsBreakdown());
 }));
 
 app.get('/flows', wrap(async (_req, res) => {
