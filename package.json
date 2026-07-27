@@ -1,0 +1,19 @@
+{
+  "name": "osero-spusds-monitoring",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API returning the performance of Osero's ALM Proxy allocation into SparkLend spUSDS",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "viem": "^2.21.55"
+  }
+}
