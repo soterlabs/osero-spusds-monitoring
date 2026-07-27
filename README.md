@@ -180,18 +180,21 @@ Liveness probe — also confirms the RPC is reachable.
 
 ---
 
-## Deploying on Railway
+## Deployment
 
-1. Push this repo to GitHub, then **New Project → Deploy from GitHub repo** in Railway.
-2. Set the two variables under **Variables**:
+A plain Node service with no platform coupling — it runs anywhere that can run `npm start`.
+
+1. `npm ci && npm start`.
+2. Set the two required variables:
 
    | Variable | Value |
    |---|---|
-   | `RPC_URL` | your Ethereum mainnet RPC URL |
+   | `RPC_URL` | your Ethereum mainnet RPC URL (needs archive `eth_call`) |
    | `ETHERSCAN_API_KEY` | your Etherscan API key |
 
-3. Deploy. `railway.json` already sets the start command and points the healthcheck at `/health`.
-   Railway injects `PORT` automatically — don't set it.
+3. The service binds `0.0.0.0` on `PORT` (default `3000`). Most hosts inject `PORT`; if yours
+   does, leave it unset. Point the platform's healthcheck at `GET /health`, which also confirms
+   the RPC is reachable.
 
 Optional variables (all have sensible defaults):
 
