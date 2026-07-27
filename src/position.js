@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { cached } from './cache.js';
 import { getTokenTransfers } from './etherscan.js';
 import { pMap } from './pmap.js';
+import { amount, iso, pct } from './format.js';
 import {
   RAY,
   blockAtTimestamp,
@@ -178,14 +179,6 @@ export async function getPerformanceAt(blockNumber, timestamp) {
  * Presentation
  * ------------------------------------------------------------------ */
 
-const pct = (x) => Number((x * 100).toFixed(6));
-
-function amount(raw, decimals) {
-  return { raw: raw.toString(), formatted: formatUnits(raw, decimals), value: Number(formatUnits(raw, decimals)) };
-}
-
-const iso = (ts) => new Date(ts * 1000).toISOString();
-
 export function serialise(p, extras = {}) {
   const d = p.stats.decimals;
   const a = (v) => amount(v, d);
@@ -279,7 +272,8 @@ export async function getHistory({ interval = 'day', from, to, limit = 400 }) {
   // Sample on interval boundaries, always anchored at inception and "now".
   const stamps = [start];
   for (let t = Math.ceil(start / step) * step; t < end; t += step) if (t > start) stamps.push(t);
-  stamps.push(end);
+  // `end` may coincide with `start` (opened today) or land on a bucket edge.
+  if (end > stamps[stamps.length - 1]) stamps.push(end);
 
   if (stamps.length > limit) {
     const keep = Math.ceil(stamps.length / limit);

@@ -3,8 +3,9 @@ import { mainnet } from 'viem/chains';
 import { config } from './config.js';
 import { cached, forever } from './cache.js';
 import { withLimit } from './limiter.js';
+import { RAY, deployedFrom, lendingIdleFrom } from './math.js';
 
-export const RAY = 10n ** 27n;
+export { RAY };
 
 export const client = createPublicClient({
   chain: mainnet,
@@ -125,6 +126,54 @@ export async function scaledBalanceAndIndexAt(holder, blockNumber) {
       })
     );
     return { scaled, index };
+  });
+}
+
+const susdsAbi = parseAbi(['function ssr() view returns (uint256)']);
+
+/**
+ * Every input the cost-of-funds calculation needs at one historical block, in
+ * a single multicall:
+ *
+ *   position     = scaledBalance × index / RAY          (holder's rebased balance)
+ *   poolIdle     = underlying sitting in the aToken     (unborrowed liquidity)
+ *   lendingIdle  = position × poolIdle / totalSupply    (holder's share of it)
+ *   deployed     = position − lendingIdle               ( ≡ position × utilization )
+ *   ssr          = Sky Savings Rate, per-second in RAY
+ *
+ * `lendingIdle` mirrors settlement-cycle's `lending_idle_usds` deduction
+ * (`_aggregate_lending_idle_usds`): the prime pays the base rate only on the
+ * borrowed share of what it supplied. Both balances are rebased, so their
+ * ratio equals the scaled ratio — no scaledTotalSupply call needed.
+ */
+export async function dailyStateAt(holder, blockNumber) {
+  return cached(`daily:${holder}:${blockNumber}`, forever, async () => {
+    const { underlying, pool } = await getMarket();
+    const [scaled, index, totalSupply, poolIdle, ssr] = await withLimit(() =>
+      client.multicall({
+        blockNumber,
+        allowFailure: false,
+        contracts: [
+          { address: config.aToken, abi: aTokenAbi, functionName: 'scaledBalanceOf', args: [holder] },
+          { address: pool, abi: poolAbi, functionName: 'getReserveNormalizedIncome', args: [underlying.address] },
+          { address: config.aToken, abi: erc20Abi, functionName: 'totalSupply' },
+          { address: underlying.address, abi: erc20Abi, functionName: 'balanceOf', args: [config.aToken] },
+          { address: config.susds, abi: susdsAbi, functionName: 'ssr' },
+        ],
+      })
+    );
+
+    const position = (scaled * index) / RAY;
+    return {
+      scaled,
+      index,
+      totalSupply,
+      poolIdle,
+      ssr,
+      position,
+      lendingIdle: lendingIdleFrom(position, poolIdle, totalSupply),
+      deployed: deployedFrom(position, poolIdle, totalSupply),
+    };
   });
 }
 
